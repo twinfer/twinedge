@@ -94,7 +94,8 @@ func main() {
 	}
 
 	// Initialize Benthos manager
-	benthosManager := benthos_manager.NewManager(ctx, dbClient, logger)
+	schemaRegistry := configManager.GetSchemaRegistry() // Get schema registry from config manager
+	benthosManager := benthos_manager.NewManager(dbClient, featureToggleService, schemaRegistry, logger)
 	if err := benthosManager.Start(ctx); err != nil {
 		logger.Fatal("Failed to start Benthos manager", zap.Error(err))
 	}
@@ -113,8 +114,35 @@ func main() {
 
 	// Initialize and start Caddy server
 	caddyServer := caddy_server.NewServer(caddyConfigurator, logger)
-	if err := caddyServer.Start(ctx); err != nil {
+	if err := caddyServer.Start(ctx); err != nil { // This loads the main config
 		logger.Fatal("Failed to start Caddy server", zap.Error(err))
+	}
+
+	// Register Benthos health check route with Caddy configurator before Admin API calls
+	if err := benthosManager.RegisterHealthCheckRoute(caddyConfigurator); err != nil {
+		// Log error but don't necessarily fail startup, health check is auxiliary
+		logger.Error("Failed to register Benthos health check route with Caddy configurator", zap.Error(err))
+	}
+
+	// Placeholder for registering system routes via Caddy Admin API
+	systemRoutes := caddyConfigurator.GetSystemRoutes()
+	if len(systemRoutes) > 0 {
+		logger.Info("Registering system routes via Caddy Admin API (placeholder)...")
+		// TODO: Implement actual Caddy Admin API calls here.
+		// This requires:
+		// 1. Caddy's Admin API address (default: localhost:2019).
+		// 2. Constructing JSON payloads for each route.
+		//    - Marshalling http.Handler to Caddy JSON needs a Caddy module that
+		//      can dispatch to pre-registered Go handlers by a name/ID.
+		// Example for one route:
+		// POST /config/apps/http/servers/main/routes
+		// Body: { "@id": "benthos_health", "match": [{"path": ["/health/benthos"]}], "handle": [{"handler": "go_handler_module", "handler_id": "benthos_health_check"}] }
+		for path := range systemRoutes {
+			logger.Info("Would register system route via Admin API",
+				zap.String("path", path),
+				zap.String("TODO", "Actual Admin API call not implemented in this subtask. Handler registration needs specific Caddy module."),
+			)
+		}
 	}
 
 	// Initialize service manager

@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap"
 )
 
-//go:embed schemas/*.json
+//go:embed schemas/*.json ../benthos_manager/schemas/*.json
 var schemaFS embed.FS
 
 // Config holds all application configuration
@@ -64,6 +64,7 @@ type ConfigManager interface {
 	GetConfig() *Config
 	GetSecrets() (map[string]string, error)
 	SaveSecrets(secrets map[string]string) error
+	GetSchemaRegistry() *SchemaRegistry // New method
 }
 
 // configManagerImpl implements the ConfigManager interface
@@ -169,6 +170,11 @@ func (m *configManagerImpl) GetConfig() *Config {
 	return m.config
 }
 
+// GetSchemaRegistry returns the schema registry.
+func (m *configManagerImpl) GetSchemaRegistry() *SchemaRegistry {
+	return m.schemaRegistry
+}
+
 // GetSecrets returns sensitive config values, could be integrated with a keyring/vault
 func (m *configManagerImpl) GetSecrets() (map[string]string, error) {
 	secrets := make(map[string]string)
@@ -219,8 +225,14 @@ func (m *configManagerImpl) loadSecrets(config *Config) error {
 func initSchemaRegistry(logger *zap.Logger) (*SchemaRegistry, error) {
 	registry := NewSchemaRegistry(logger)
 	
-	// Read all schema files from the embedded filesystem
-	err := fs.WalkDir(schemaFS, "schemas", func(path string, d fs.DirEntry, err error) error {
+	// Read all schema files from the embedded filesystem.
+	// schemaFS now contains files from both 'schemas/' and '../benthos_manager/schemas/'.
+	// fs.WalkDir will walk from the root of the embed.FS.
+	// The paths will be relative to the embed roots, e.g.,
+	// "schemas/config_schema.json" or "benthos_manager/schemas/benthos_config_schema.json" (if embed maps it that way)
+	// or "../benthos_manager/schemas/benthos_config_schema.json" (if embed preserves the path).
+	// filepath.Base will correctly extract the filename.
+	err := fs.WalkDir(schemaFS, ".", func(path string, d fs.DirEntry, err error) error { // Start walk from "." (root of embed.FS)
 		if err != nil {
 			return err
 		}
@@ -228,9 +240,16 @@ func initSchemaRegistry(logger *zap.Logger) (*SchemaRegistry, error) {
 		if d.IsDir() || !strings.HasSuffix(path, ".json") {
 			return nil
 		}
-		
-		schemaName := strings.TrimSuffix(filepath.Base(path), ".json")
-		
+
+		// schemaName should be the filename without extension, e.g., "config_schema" or "benthos_config_schema"
+		// The problem description asks for "benthos_config" from "benthos_config_schema.json".
+		// So, we might need to trim "_schema" as well if that's the convention.
+		baseName := filepath.Base(path)
+		schemaName := strings.TrimSuffix(baseName, ".json")
+		schemaName = strings.TrimSuffix(schemaName, "_schema") // Trim "_schema" suffix if present
+
+		logger.Debug("Attempting to register schema", zap.String("path_in_embed", path), zap.String("derived_schemaName", schemaName))
+
 		schemaBytes, err := schemaFS.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("failed to read schema file %s: %w", path, err)
