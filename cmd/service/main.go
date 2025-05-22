@@ -17,6 +17,8 @@ import (
 	"github.com/twinfer/edgetwin/internal/features"
 	"github.com/twinfer/edgetwin/internal/security"
 	"github.com/twinfer/edgetwin/internal/service"
+
+	"github.com/greenpau/go-authcrunch/pkg/ids" // Assuming this is the correct fork path
 )
 
 func main() {
@@ -52,6 +54,36 @@ func main() {
 
 	// Initialize services (dependency injection)
 	userProvider := security.NewUserProvider(dbClient, logger)
+
+	// Define the factory function for our custom identity store
+	// This factory will be called by go-authcrunch when it needs to instantiate a "duckdb_custom" store
+	duckDBStoreFactory := func(cfg *ids.IdentityStoreConfig, factoryLogger *zap.Logger) (ids.IdentityStore, error) {
+		realm := "default_realm" // Default realm
+		if r, ok := cfg.Params["realm"].(string); ok && r != "" {
+			realm = r
+			factoryLogger.Debug("Realm overridden from params", zap.String("realm", realm))
+		} else {
+			factoryLogger.Debug("Using default realm", zap.String("realm", realm))
+		}
+
+		// userProvider and logger are captured from the main function's scope.
+		// The factoryLogger is provided by go-authcrunch for the store's own logging,
+		// but our NewDuckDBIdentityStoreAdapter is designed to take the main application logger.
+		// If desired, factoryLogger could be passed to the adapter instead or additionally.
+		adapter := security.NewDuckDBIdentityStoreAdapter(cfg.Name, realm, userProvider, logger)
+		factoryLogger.Info("DuckDBIdentityStoreAdapter instance created by factory", zap.String("store_name", cfg.Name), zap.String("realm", realm))
+		return adapter, nil
+	}
+
+	// Register the custom identity store kind with go-authcrunch
+	// The exact signature of RegisterIdentityStoreKind (e.g., if it returns an error) depends on the fork.
+	// Assuming it might return an error based on the example.
+	// If it panics on error, the error handling here would be different (e.g. a recover block if necessary).
+	if regErr := ids.RegisterIdentityStoreKind("duckdb_custom", duckDBStoreFactory); regErr != nil {
+		logger.Fatal("Failed to register 'duckdb_custom' identity store kind", zap.Error(regErr))
+	}
+	logger.Info("Successfully registered 'duckdb_custom' identity store kind")
+
 	featureToggleService, err := features.NewBackendClient(
 		cfg.FeatureToggle.BackendURL,
 		cfg.FeatureToggle.APIKey,
