@@ -24,10 +24,17 @@ type Config struct {
 	} `mapstructure:"server"`
 	
 	Security struct {
-		JWTSecret         string `mapstructure:"jwt_secret"`
-		TokenExpiryMinutes int    `mapstructure:"token_expiry_minutes"`
-		APIKeyHeader      string `mapstructure:"api_key_header"`
+		JWTSecret            string `mapstructure:"jwt_secret"`
+		TokenExpiryMinutes   int    `mapstructure:"token_expiry_minutes"`
+		APIKeyHeader         string `mapstructure:"api_key_header"`
 		FeatureToggleCommand string `mapstructure:"feature_toggle_command"`
+		JWTIssuer            string `mapstructure:"jwt_issuer"`
+		JWTAudience          string `mapstructure:"jwt_audience"`
+		AuthCookieName       string `mapstructure:"auth_cookie_name"`
+		AuthCookieDomain     string `mapstructure:"auth_cookie_domain"`
+		AuthCookiePath       string `mapstructure:"auth_cookie_path"`
+		AuthCookieSecure     bool   `mapstructure:"auth_cookie_secure"`
+		AuthCookieSameSite   string `mapstructure:"auth_cookie_samesite"`
 	} `mapstructure:"security"`
 	
 	Redpanda struct {
@@ -79,10 +86,18 @@ func NewConfigManager(logger *zap.Logger) (ConfigManager, error) {
 	// Set defaults
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.port", 8080)
-	
+
+	// Security defaults
 	v.SetDefault("security.token_expiry_minutes", 60)
 	v.SetDefault("security.api_key_header", "X-API-Key")
-	
+	v.SetDefault("security.jwt_issuer", "edgetwin_gateway")
+	v.SetDefault("security.jwt_audience", "") // Optional, often service-specific
+	v.SetDefault("security.auth_cookie_name", "access_token")
+	v.SetDefault("security.auth_cookie_domain", "")    // Default to host only, not setting for subdomains
+	v.SetDefault("security.auth_cookie_path", "/")     // Default path for the cookie
+	v.SetDefault("security.auth_cookie_secure", true)  // Default to secure (HTTPS)
+	v.SetDefault("security.auth_cookie_samesite", "Lax") // Default SameSite policy
+
 	v.SetDefault("database.path", "./edgetwin.db")
 	
 	v.SetDefault("feature_toggle.cache_ttl", 300)

@@ -13,6 +13,8 @@ type User struct {
 	ID               string
 	Username         string
 	PasswordHash     string
+	Email            string // New field
+	FullName         string // New field
 	SubscriptionType string
 	APIKey           string
 	Roles            []string
@@ -23,6 +25,7 @@ type UserProvider interface {
 	GetUserByAPIKey(ctx context.Context, apiKey string) (*User, error)
 	GetUserByCredentials(ctx context.Context, username string, password string) (*User, error)
 	GetUserByID(ctx context.Context, userID string) (*User, error)
+	GetUserByUsername(ctx context.Context, username string) (*User, error) // New method
 }
 
 // dbUserProvider implements UserProvider using a database backend.
@@ -57,14 +60,38 @@ func (p *dbUserProvider) GetUserByAPIKey(ctx context.Context, apiKey string) (*U
 	// We also need to get SubscriptionType, which is not directly in database.User.
 	// This might require another query or a join in the original query.
 	// For this implementation, we'll leave SubscriptionType and Roles empty.
+	// Assuming dbUser (database.User) will be updated to include Email and FullName.
+	// If not, these will be zero-valued (empty strings).
 	return &User{
 		ID:           dbUser.ID,
 		Username:     dbUser.Username,
 		PasswordHash: dbUser.PasswordHash,
+		Email:        dbUser.Email,
+		FullName:     dbUser.FullName,
 		APIKey:       dbUser.APIKey,
-		// SubscriptionType: // Needs to be fetched, e.g., via dbUser.SubscriptionID
 		// Roles:            // Needs to be fetched/parsed
-	}, nil
+	}
+
+	var subscriptionType string
+	if dbUser.SubscriptionID != "" {
+		subscription, err := p.dbClient.GetSubscriptionByID(ctx, dbUser.SubscriptionID)
+		if err != nil {
+			if err == sql.ErrNoRows || err.Error() == fmt.Sprintf("subscription not found: %s", dbUser.SubscriptionID) { // Check for specific error from GetSubscriptionByName if it's used, or a generic not found
+				p.logger.Warn("Subscription not found for ID", zap.String("subscriptionID", dbUser.SubscriptionID), zap.String("userID", dbUser.ID))
+				subscriptionType = "unknown" // Or ""
+			} else {
+				p.logger.Error("Error getting subscription by ID", zap.Error(err), zap.String("subscriptionID", dbUser.SubscriptionID), zap.String("userID", dbUser.ID))
+				subscriptionType = "error" // Or "" to indicate failure to fetch
+			}
+		} else {
+			subscriptionType = subscription.Name
+		}
+	} else {
+		subscriptionType = "none" // Default if no SubscriptionID
+	}
+	secUser.SubscriptionType = subscriptionType
+
+	return &secUser, nil
 }
 
 // GetUserByCredentials retrieves a user by username and password.
@@ -86,14 +113,37 @@ func (p *dbUserProvider) GetUserByCredentials(ctx context.Context, username stri
 	}
 
 	// Similar to GetUserByAPIKey, SubscriptionType and Roles need handling.
+	// Assuming dbUser (database.User) will be updated to include Email and FullName.
 	return &User{
 		ID:           dbUser.ID,
 		Username:     dbUser.Username,
 		PasswordHash: dbUser.PasswordHash,
+		Email:        dbUser.Email,
+		FullName:     dbUser.FullName,
 		APIKey:       dbUser.APIKey,
-		// SubscriptionType: // Needs to be fetched
 		// Roles:            // Needs to be fetched/parsed
-	}, nil
+	}
+
+	var subscriptionType string
+	if dbUser.SubscriptionID != "" {
+		subscription, err := p.dbClient.GetSubscriptionByID(ctx, dbUser.SubscriptionID)
+		if err != nil {
+			if err == sql.ErrNoRows || err.Error() == fmt.Sprintf("subscription not found: %s", dbUser.SubscriptionID) {
+				p.logger.Warn("Subscription not found for ID", zap.String("subscriptionID", dbUser.SubscriptionID), zap.String("userID", dbUser.ID))
+				subscriptionType = "unknown"
+			} else {
+				p.logger.Error("Error getting subscription by ID", zap.Error(err), zap.String("subscriptionID", dbUser.SubscriptionID), zap.String("userID", dbUser.ID))
+				subscriptionType = "error"
+			}
+		} else {
+			subscriptionType = subscription.Name
+		}
+	} else {
+		subscriptionType = "none"
+	}
+	secUser.SubscriptionType = subscriptionType
+
+	return &secUser, nil
 }
 
 // GetUserByID retrieves a user by their ID.
@@ -109,12 +159,80 @@ func (p *dbUserProvider) GetUserByID(ctx context.Context, userID string) (*User,
 	}
 
 	// Similar to GetUserByAPIKey, SubscriptionType and Roles need handling.
+	// Assuming dbUser (database.User) will be updated to include Email and FullName.
 	return &User{
 		ID:           dbUser.ID,
 		Username:     dbUser.Username,
 		PasswordHash: dbUser.PasswordHash,
+		Email:        dbUser.Email,
+		FullName:     dbUser.FullName,
 		APIKey:       dbUser.APIKey,
-		// SubscriptionType: // Needs to be fetched
 		// Roles:            // Needs to be fetched/parsed
-	}, nil
+	}
+
+	var subscriptionType string
+	if dbUser.SubscriptionID != "" {
+		subscription, err := p.dbClient.GetSubscriptionByID(ctx, dbUser.SubscriptionID)
+		if err != nil {
+			if err == sql.ErrNoRows || err.Error() == fmt.Sprintf("subscription not found: %s", dbUser.SubscriptionID) {
+				p.logger.Warn("Subscription not found for ID", zap.String("subscriptionID", dbUser.SubscriptionID), zap.String("userID", dbUser.ID))
+				subscriptionType = "unknown"
+			} else {
+				p.logger.Error("Error getting subscription by ID", zap.Error(err), zap.String("subscriptionID", dbUser.SubscriptionID), zap.String("userID", dbUser.ID))
+				subscriptionType = "error"
+			}
+		} else {
+			subscriptionType = subscription.Name
+		}
+	} else {
+		subscriptionType = "none"
+	}
+	secUser.SubscriptionType = subscriptionType
+
+	return &secUser, nil
+}
+
+// GetUserByUsername retrieves a user by their username, without password validation.
+func (p *dbUserProvider) GetUserByUsername(ctx context.Context, username string) (*User, error) {
+	dbUser, err := p.dbClient.GetUserByUsername(ctx, username)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			p.logger.Info("User not found for username", zap.String("username", username))
+			return nil, err // Or database.ErrUserNotFound if that's the preferred error type
+		}
+		p.logger.Error("Error getting user by username", zap.Error(err), zap.String("username", username))
+		return nil, err
+	}
+
+	// Assuming dbUser (database.User) will be updated to include Email and FullName.
+	return &User{
+		ID:           dbUser.ID,
+		Username:     dbUser.Username,
+		PasswordHash: dbUser.PasswordHash, // Still useful to have, though not used for auth here
+		Email:        dbUser.Email,
+		FullName:     dbUser.FullName,
+		APIKey:       dbUser.APIKey,
+		// Roles:            // Needs to be fetched/parsed
+	}
+
+	var subscriptionType string
+	if dbUser.SubscriptionID != "" {
+		subscription, err := p.dbClient.GetSubscriptionByID(ctx, dbUser.SubscriptionID)
+		if err != nil {
+			if err == sql.ErrNoRows || err.Error() == fmt.Sprintf("subscription not found: %s", dbUser.SubscriptionID) {
+				p.logger.Warn("Subscription not found for ID", zap.String("subscriptionID", dbUser.SubscriptionID), zap.String("userID", dbUser.ID))
+				subscriptionType = "unknown"
+			} else {
+				p.logger.Error("Error getting subscription by ID", zap.Error(err), zap.String("subscriptionID", dbUser.SubscriptionID), zap.String("userID", dbUser.ID))
+				subscriptionType = "error"
+			}
+		} else {
+			subscriptionType = subscription.Name
+		}
+	} else {
+		subscriptionType = "none"
+	}
+	secUser.SubscriptionType = subscriptionType
+
+	return &secUser, nil
 }

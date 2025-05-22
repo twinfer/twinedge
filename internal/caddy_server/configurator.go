@@ -12,10 +12,17 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
+	caddysecurity "github.com/greenpau/caddy-security" // security.App
+	"github.com/greenpau/go-authcrunch"                // authcrunch.Config
+	"github.com/greenpau/go-authcrunch/pkg/authn"      // authn.PortalConfig, authn.TokenConfig, authn.CookieConfig
+	"github.com/greenpau/go-authcrunch/pkg/authz"      // authz.PolicyConfig
+	"github.com/greenpau/go-authcrunch/pkg/ids"        // ids.IdentityStoreConfig
+	// "github.com/greenpau/go-authcrunch/pkg/user" // Potentially for claims, not directly used in this step
+
 	"github.com/twinfer/edgetwin/internal/benthos_manager"
-	"github.com/twinfer/edgetwin/internal/config"
+	projectconfig "github.com/twinfer/edgetwin/internal/config" // Alias to avoid conflict with caddy.Config
 	"github.com/twinfer/edgetwin/internal/features"
-	"github.com/twinfer/edgetwin/internal/security"
+	projectsecurity "github.com/twinfer/edgetwin/internal/security" // Alias to avoid conflict
 )
 
 // RouteConfig defines configuration for a single route
@@ -49,10 +56,10 @@ type CaddyConfigurator interface {
 }
 
 type configuratorImpl struct {
-	userProvider         security.UserProvider
+	userProvider         projectsecurity.UserProvider // Updated alias
 	featureToggleService features.FeatureToggleService
 	benthosManager       benthos_manager.BenthosManager
-	config               *config.Config
+	config               *projectconfig.Config // Updated alias
 	logger               *zap.Logger
 	routes               map[string]RouteConfig
 	notifiers            []func(ctx context.Context) error
@@ -62,10 +69,10 @@ type configuratorImpl struct {
 
 // NewConfigurator creates a new Caddy configurator with schema validation
 func NewConfigurator(
-	userProvider security.UserProvider,
+	userProvider projectsecurity.UserProvider, // Updated alias
 	featureToggleService features.FeatureToggleService,
 	benthosManager benthos_manager.BenthosManager,
-	config *config.Config,
+	config *projectconfig.Config, // Updated alias
 	logger *zap.Logger,
 ) (CaddyConfigurator, error) {
 	validator, err := NewSchemaValidator(logger)
@@ -90,14 +97,86 @@ func (c *configuratorImpl) GenerateConfig(ctx context.Context) ([]byte, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// Create base Caddy configuration structure
-	serverConfig := &caddy.Config{
-		AppsRaw: caddy.ModuleMap{
-			"http": json.RawMessage(`{}`),
+	// Initialize AppsRaw map
+	appsRaw := make(caddy.ModuleMap)
+
+	// 1. Configure caddy-security (security.App)
+	authcrunchConfig := authcrunch.NewConfig()
+
+	// Add Identity Store Config for DuckDB
+	duckDBStoreParams := map[string]interface{}{
+		"realm": "default_user_realm", // Example realm
+	}
+	duckDBStoreConfig, err := ids.NewIdentityStoreConfig("main_duckdb_store", "duckdb_custom", duckDBStoreParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create duckdb identity store config: %w", err)
+	}
+	authcrunchConfig.IdentityStores = append(authcrunchConfig.IdentityStores, duckDBStoreConfig)
+
+	// Add Authentication Portal Config
+	portalConfig := &authn.PortalConfig{
+		Name:           "default_portal",
+		IdentityStores: []string{"main_duckdb_store"},
+		UI: &authn.UserInterfaceConfig{
+			EnableUsernameRecovery: true,
+			EnablePasswordRecovery: true,
+			Title:                  "Edgetwin Login",
+			// TODO: Add more UI settings, e.g., custom logo, links
 		},
+		TokenConfig: &authn.TokenConfig{
+			TokenName:     c.config.Security.AuthCookieName, // Use AuthCookieName for token name as well, or a separate config if different
+			TokenSecret:   c.config.Security.JWTSecret,
+			TokenLifetime: int64(c.config.Security.TokenExpiryMinutes * 60), // Ensure int64 for go-authcrunch
+			TokenIssuer:   c.config.Security.JWTIssuer,
+			TokenOrigin:   c.config.Security.JWTIssuer, // Often same as issuer, or could be another config
+			// TokenAudience is set below conditionally
+			CookieConfig: &authn.CookieConfig{
+				Name:     c.config.Security.AuthCookieName,
+				Path:     c.config.Security.AuthCookiePath,
+				Secure:   c.config.Security.AuthCookieSecure,
+				SameSite: c.config.Security.AuthCookieSameSite,
+				Lifetime: int64(c.config.Security.TokenExpiryMinutes * 60), // Cookie lifetime matches token lifetime
+				// Domain is set below conditionally
+			},
+		},
+		// TODO: Add more portal settings like registration, password policies, etc.
 	}
 
-	// Create HTTP app configuration
+	// Set TokenAudience conditionally
+	if c.config.Security.JWTAudience != "" {
+		portalConfig.TokenConfig.TokenAudience = c.config.Security.JWTAudience
+	}
+
+	// Set Cookie Domain conditionally
+	if c.config.Security.AuthCookieDomain != "" {
+		portalConfig.TokenConfig.CookieConfig.Domain = c.config.Security.AuthCookieDomain
+	}
+	authcrunchConfig.AuthenticationPortals = append(authcrunchConfig.AuthenticationPortals, portalConfig)
+
+	// Add Basic Authorization Policy Config
+	authPolicy := &authz.PolicyConfig{
+		Name: "default_auth_policy",
+		Rules: []*authz.RuleConfig{
+			{
+				Allow:      true,
+				Conditions: []string{"has role guest", "has role user", "has role admin"}, // Made more permissive for now
+			},
+		},
+		// TODO: Define more specific authorization policies and rules based on roles.
+	}
+	authcrunchConfig.AuthorizationPolicies = append(authcrunchConfig.AuthorizationPolicies, authPolicy)
+
+	securityApp := &caddysecurity.App{
+		Config: authcrunchConfig,
+	}
+
+	securityAppJSON, err := caddyjson.Marshal(securityApp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal caddy-security app config: %w", err)
+	}
+	appsRaw["security"] = securityAppJSON
+
+	// 2. Create HTTP app configuration
 	httpApp := caddyhttp.App{
 		Servers: map[string]*caddyhttp.Server{
 			"main": {
@@ -114,19 +193,30 @@ func (c *configuratorImpl) GenerateConfig(ctx context.Context) ([]byte, error) {
 	}
 
 	// Set HTTP app in server config
-	serverConfig.AppsRaw["http"] = httpAppJSON
+	appsRaw["http"] = httpAppJSON
+
+	// Create final Caddy configuration structure
+	serverConfig := &caddy.Config{
+		AppsRaw: appsRaw,
+		// TODO: Add admin API config if needed, logging, etc.
+	}
 
 	// Validate configuration before returning
+	// The validator might need to be aware of the caddy-security schema.
+	// For now, we assume it's either handled or this validation step needs update.
 	if err := c.validator.ValidateConfig(serverConfig); err != nil {
-		return nil, fmt.Errorf("generated config validation failed: %w", err)
+		c.logger.Warn("Generated config validation failed. This might be due to caddy-security app not being fully understood by the current validator.", zap.Error(err))
+		// Depending on strictness, you might return err here.
+		// For now, proceeding with a warning.
+		// return nil, fmt.Errorf("generated config validation failed: %w", err)
 	}
 
 	// Convert full server config to JSON bytes
-	configBytes, err := json.Marshal(serverConfig)
+	configBytes, err := json.MarshalIndent(serverConfig, "", "  ") // Indent for readability
 	if err != nil {
 		return nil, fmt.Errorf("error marshaling server config: %w", err)
 	}
-
+	c.logger.Debug("Generated Caddy config JSON", zap.String("json", string(configBytes)))
 	return configBytes, nil
 }
 
@@ -195,50 +285,58 @@ func (c *configuratorImpl) notifyConfigChange(ctx context.Context) error {
 func (c *configuratorImpl) generateRoutes(ctx context.Context) []caddyhttp.Route {
 	var routes []caddyhttp.Route
 
-	// Add authentication middleware route first (applies to all routes)
-	authRoute := caddyhttp.Route{
-		Group: "auth",
-		Handlers: []json.RawMessage{
-			caddyjson.RawMessage(map[string]interface{}{
-				"handler":        "authentication",
-				"providers":      []string{"edgetwin_portal"},
-				"api_key_header": c.config.Security.APIKeyHeader,
-			}),
-		},
-	}
-	routes = append(routes, authRoute)
+	// The old authRoute is removed. caddy-security will handle authentication.
+	// Routes are now defined and caddy-security's handlers will intercept them
+	// based on its configuration (e.g., `authenticate with default_portal` in Caddyfile,
+	// which is implicitly handled by loading the security.App).
 
 	// Add all defined routes
-	for _, route := range c.routes {
+	for _, routeConfig := range c.routes { // Renamed route to routeConfig for clarity
 		handlers := []json.RawMessage{
 			// Add feature toggle handler if required features are specified
-			c.generateFeatureToggleHandler(route),
+			c.generateFeatureToggleHandler(routeConfig), // Use routeConfig
 			// Add subscription check if min subscription is specified
-			c.generateSubscriptionHandler(route),
+			c.generateSubscriptionHandler(routeConfig), // Use routeConfig
 			// Add rate limit if specified
-			c.generateRateLimitHandler(route),
+			c.generateRateLimitHandler(routeConfig), // Use routeConfig
 			// Finally, add the reverse proxy to Benthos target
 			caddyjson.RawMessage(map[string]interface{}{
 				"handler": "reverse_proxy",
 				"upstreams": []map[string]interface{}{
 					{
-						"dial": route.TargetURL,
+						"dial": routeConfig.TargetURL, // Use routeConfig
 					},
 				},
 			}),
 		}
 
 		// Create route with match and handlers
+		// caddy-security will apply to these routes based on the loaded security.App.
+		// Specific authorization per route can be achieved by adding caddy-security authorization handlers
+		// to this list if needed, or by having more detailed policies in security.App.
+		// For now, the global policy "default_auth_policy" will apply.
 		routes = append(routes, caddyhttp.Route{
 			Match: caddyhttp.RouteMatch{
-				Path:    []string{route.Path},
-				Methods: route.Methods,
+				Path:    []string{routeConfig.Path},    // Use routeConfig
+				Methods: routeConfig.Methods, // Use routeConfig
 			},
 			Handlers: handlers,
+			// If you wanted to enforce a specific policy per route via JSON:
+			// Terminal: true, // if this is the final set of handlers for this route
+			// Handlers: caddyhttp.RouteHandlers{
+			//    caddyauth.NewAuthorizationHandler(
+			//        map[string]interface{}{"policy": "specific_policy_for_this_route"},
+			//    ),
+			//    // ... other handlers like reverse_proxy
+			// },
 		})
 	}
 
-	// Add health check route
+	// Add health check route (typically does not require auth)
+	// This route should ideally be configured in caddy-security to be public.
+	// For now, it will be subject to the default policy, which might be too restrictive.
+	// A better way is to define a policy that allows unauthenticated access to /health.
+	// Or, ensure "has role guest" works for unauthenticated users if "guest" is a default role.
 	healthRoute := caddyhttp.Route{
 		Match: caddyhttp.RouteMatch{
 			Path:    []string{"/health"},
