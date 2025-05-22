@@ -3,9 +3,11 @@ package security
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"github.com/Contoso/caddyshack/internal/database"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // User represents a user in the system.
@@ -62,10 +64,12 @@ func (p *dbUserProvider) GetUserByAPIKey(ctx context.Context, apiKey string) (*U
 	// For this implementation, we'll leave SubscriptionType and Roles empty.
 	// Assuming dbUser (database.User) will be updated to include Email and FullName.
 	// If not, these will be zero-valued (empty strings).
-	return &User{
+	// Correcting potential copy-paste error from previous context:
+	// Initialize secUser, then populate, then fetch subscription.
+	secUser := User{
 		ID:           dbUser.ID,
 		Username:     dbUser.Username,
-		PasswordHash: dbUser.PasswordHash,
+		PasswordHash: dbUser.PasswordHash, // Keep the hash; User struct might be used elsewhere
 		Email:        dbUser.Email,
 		FullName:     dbUser.FullName,
 		APIKey:       dbUser.APIKey,
@@ -106,18 +110,26 @@ func (p *dbUserProvider) GetUserByCredentials(ctx context.Context, username stri
 		return nil, err
 	}
 
-	// TODO: Replace with proper bcrypt password comparison
-	if dbUser.PasswordHash != password {
-		p.logger.Warn("Invalid password attempt", zap.String("username", username))
-		return nil, sql.ErrNoRows // Or a custom authentication error
+	// Compare the provided password with the stored hash
+	err = bcrypt.CompareHashAndPassword([]byte(dbUser.PasswordHash), []byte(password))
+	if err != nil {
+		if err == bcrypt.ErrMismatchedHashAndPassword {
+			p.logger.Warn("Invalid password attempt (mismatched hash and password)", zap.String("username", username))
+		} else {
+			p.logger.Error("Error comparing password hash", zap.Error(err), zap.String("username", username))
+		}
+		// Return sql.ErrNoRows for authentication failure to avoid username enumeration,
+		// consistent with user not found.
+		return nil, sql.ErrNoRows
 	}
 
-	// Similar to GetUserByAPIKey, SubscriptionType and Roles need handling.
-	// Assuming dbUser (database.User) will be updated to include Email and FullName.
-	return &User{
+	// Password is correct, proceed to populate the rest of the user details.
+	// Correcting potential copy-paste error from previous context:
+	// Initialize secUser, then populate, then fetch subscription.
+	secUser := User{
 		ID:           dbUser.ID,
 		Username:     dbUser.Username,
-		PasswordHash: dbUser.PasswordHash,
+		PasswordHash: dbUser.PasswordHash, // Include the hash
 		Email:        dbUser.Email,
 		FullName:     dbUser.FullName,
 		APIKey:       dbUser.APIKey,
@@ -160,7 +172,9 @@ func (p *dbUserProvider) GetUserByID(ctx context.Context, userID string) (*User,
 
 	// Similar to GetUserByAPIKey, SubscriptionType and Roles need handling.
 	// Assuming dbUser (database.User) will be updated to include Email and FullName.
-	return &User{
+	// Correcting potential copy-paste error from previous context:
+	// Initialize secUser, then populate, then fetch subscription.
+	secUser := User{
 		ID:           dbUser.ID,
 		Username:     dbUser.Username,
 		PasswordHash: dbUser.PasswordHash,
@@ -205,7 +219,9 @@ func (p *dbUserProvider) GetUserByUsername(ctx context.Context, username string)
 	}
 
 	// Assuming dbUser (database.User) will be updated to include Email and FullName.
-	return &User{
+	// Correcting potential copy-paste error from previous context:
+	// Initialize secUser, then populate, then fetch subscription.
+	secUser := User{
 		ID:           dbUser.ID,
 		Username:     dbUser.Username,
 		PasswordHash: dbUser.PasswordHash, // Still useful to have, though not used for auth here

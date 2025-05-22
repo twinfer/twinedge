@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Benthos Pipeline Configuration",
+  "description": "A schema for validating the basic structure of a Benthos pipeline configuration.",
+  "type": "object",
+  "properties": {
+    "http": {
+      "type": "object",
+      "properties": {
+        "address": {"type": "string", "description": "The address to bind the HTTP server to."},
+        "path": {"type": "string", "default": "/", "description": "The path to handle requests from."},
+        "enabled": {"type": "boolean", "default": true}
+      }
+    },
+    "input": {
+      "type": "object",
+      "description": "Defines the input source for the pipeline."
+    },
+    "buffer": {
+      "type": "object",
+      "description": "Defines a buffer for messages."
+    },
+    "pipeline": {
+      "type": "object",
+      "properties": {
+        "threads": {
+          "type": "integer",
+          "minimum": -1,
+          "default": 1,
+          "description": "The number of processing threads."
+        },
+        "processors": {
+          "type": "array",
+          "items": {"type": "object"},
+          "description": "A list of processors."
+        }
+      },
+      "required": ["processors"]
+    },
+    "output": {
+      "type": "object",
+      "description": "Defines the output sink for the pipeline."
+    },
+    "metrics": {
+      "type": "object"
+    },
+    "tracer": {
+      "type": "object"
+    },
+    "logger": {
+      "type": "object"
+    },
+    "shutdown_timeout": {
+      "type": "string",
+      "pattern": "^[0-9]+(s|m|h)$",
+      "description": "Timeout for graceful shutdown (e.g., '5s', '1m')."
+    }
+  },
+  "required": [
+    "input",
+    "pipeline",
+    "output"
+  ],
+  "additionalProperties": true
+}
