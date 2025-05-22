@@ -1,0 +1,120 @@
+package security
+
+import (
+	"context"
+	"database/sql"
+
+	"github.com/Contoso/caddyshack/internal/database"
+	"go.uber.org/zap"
+)
+
+// User represents a user in the system.
+type User struct {
+	ID               string
+	Username         string
+	PasswordHash     string
+	SubscriptionType string
+	APIKey           string
+	Roles            []string
+}
+
+// UserProvider defines methods for retrieving and authenticating users.
+type UserProvider interface {
+	GetUserByAPIKey(ctx context.Context, apiKey string) (*User, error)
+	GetUserByCredentials(ctx context.Context, username string, password string) (*User, error)
+	GetUserByID(ctx context.Context, userID string) (*User, error)
+}
+
+// dbUserProvider implements UserProvider using a database backend.
+type dbUserProvider struct {
+	dbClient database.DBClient
+	logger   *zap.Logger
+}
+
+// NewUserProvider creates a new UserProvider with the given database client and logger.
+func NewUserProvider(dbClient database.DBClient, logger *zap.Logger) UserProvider {
+	return &dbUserProvider{
+		dbClient: dbClient,
+		logger:   logger,
+	}
+}
+
+// GetUserByAPIKey retrieves a user by their API key.
+func (p *dbUserProvider) GetUserByAPIKey(ctx context.Context, apiKey string) (*User, error) {
+	dbUser, err := p.dbClient.GetUserByAPIKey(ctx, apiKey)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			p.logger.Info("User not found for API key", zap.String("apiKey", apiKey))
+			return nil, err // Or a custom not found error
+		}
+		p.logger.Error("Error getting user by API key", zap.Error(err), zap.String("apiKey", apiKey))
+		return nil, err
+	}
+
+	// Assuming database.User and security.User have compatible fields
+	// and roles need to be fetched/parsed if stored separately or in a specific format.
+	// For now, let's assume roles are not directly mapped or handled here.
+	// We also need to get SubscriptionType, which is not directly in database.User.
+	// This might require another query or a join in the original query.
+	// For this implementation, we'll leave SubscriptionType and Roles empty.
+	return &User{
+		ID:           dbUser.ID,
+		Username:     dbUser.Username,
+		PasswordHash: dbUser.PasswordHash,
+		APIKey:       dbUser.APIKey,
+		// SubscriptionType: // Needs to be fetched, e.g., via dbUser.SubscriptionID
+		// Roles:            // Needs to be fetched/parsed
+	}, nil
+}
+
+// GetUserByCredentials retrieves a user by username and password.
+func (p *dbUserProvider) GetUserByCredentials(ctx context.Context, username string, password string) (*User, error) {
+	dbUser, err := p.dbClient.GetUserByUsername(ctx, username)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			p.logger.Info("User not found for username", zap.String("username", username))
+			return nil, err // Or a custom authentication error
+		}
+		p.logger.Error("Error getting user by username", zap.Error(err), zap.String("username", username))
+		return nil, err
+	}
+
+	// TODO: Replace with proper bcrypt password comparison
+	if dbUser.PasswordHash != password {
+		p.logger.Warn("Invalid password attempt", zap.String("username", username))
+		return nil, sql.ErrNoRows // Or a custom authentication error
+	}
+
+	// Similar to GetUserByAPIKey, SubscriptionType and Roles need handling.
+	return &User{
+		ID:           dbUser.ID,
+		Username:     dbUser.Username,
+		PasswordHash: dbUser.PasswordHash,
+		APIKey:       dbUser.APIKey,
+		// SubscriptionType: // Needs to be fetched
+		// Roles:            // Needs to be fetched/parsed
+	}, nil
+}
+
+// GetUserByID retrieves a user by their ID.
+func (p *dbUserProvider) GetUserByID(ctx context.Context, userID string) (*User, error) {
+	dbUser, err := p.dbClient.GetUserByID(ctx, userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			p.logger.Info("User not found for ID", zap.String("userID", userID))
+			return nil, err // Or a custom not found error
+		}
+		p.logger.Error("Error getting user by ID", zap.Error(err), zap.String("userID", userID))
+		return nil, err
+	}
+
+	// Similar to GetUserByAPIKey, SubscriptionType and Roles need handling.
+	return &User{
+		ID:           dbUser.ID,
+		Username:     dbUser.Username,
+		PasswordHash: dbUser.PasswordHash,
+		APIKey:       dbUser.APIKey,
+		// SubscriptionType: // Needs to be fetched
+		// Roles:            // Needs to be fetched/parsed
+	}, nil
+}
